@@ -43,9 +43,9 @@ exports.messageTrigger = functions.firestore.document('messages/{messageId}').on
                         }
                     }
                 });
-                await admin.firestore().collection('users')
+                return admin.firestore().collection('users')
                     .doc(toUserId)
-                    .update({ deviceTokens: toUserDeviceTokens }); // overwrite the token array with the modified device token array
+                    .update({ deviceTokens: toUserDeviceTokens }).then(res => res); // overwrite the token array with the modified device token array
             });
         } else {
             // TODO: Delete messages of deleted users in the future in order to not go in this handler
