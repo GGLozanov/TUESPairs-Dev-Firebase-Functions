@@ -102,6 +102,11 @@ exports.messageTrigger = functions.firestore.document('messages/{messageId}').on
 });
 
 exports.matchTrigger = functions.firestore.document('users/{userId}').onUpdate(async (snapshot, context) => {
+    if(snapshot.before.empty || snapshot.after.empty) {
+        console.error('Received empty user snapshot! Cancelling notification.');
+        return;
+    }
+
     var userDataBefore = snapshot.before.data();
     var userDataAfter = snapshot.after.data();
 
