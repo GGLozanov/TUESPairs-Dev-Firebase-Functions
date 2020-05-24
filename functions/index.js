@@ -50,19 +50,42 @@ exports.messageTrigger = functions.firestore.document('messages/{messageId}').on
         return;
     }
 
-    messageData = snapshot.data(); // get the doc snapshot's data (like in Flutter)
+    messageData = snapshot.data(); // get message data for access to the newly created message
 
     const content = messageData.content; // content of sent message
+
     const toUserId = messageData.toId;
+    const fromUserId = messageData.fromId;
 
-    var toUserData = await getUserDataById(toUserId);
+    var toUserData = await getUserDataById(toUserId); // get their data for notification sending
+    var fromUserData = await getUserDataById(fromUserId); // get their data for username display
 
-    if(toUserData === null) {
+    // Handle errors/invalid info
+    if(toUserData === null || fromUserData === null) {
+        console.error('One of the users has invalid info! Cancelling notification!');
         return;
     }
 
+    // Notifications in DB only need user id and not anything else (hooray, no complicated deviceToken stuff!) and have no need for hard mobile implementation
+    const currentTime = new Date();
+
+    var notificationAddResult = await admin.firestore().collection('notifications').add({ 
+        userID: toUserId,
+        message: `You've received a new message from ${fromUserData.username}`,
+        sentTime: currentTime.toISOString() // convert time
+    }); // add the db notification object
+
+    var toUserDeviceTokens = toUserData.deviceTokens; // get the user's original device tokens where he's logged in
+
+    if(toUserDeviceTokens.length === 0) {
+        // null/empty array (user logged out from all devices); cancel notification in that case
+        console.error('No registered device tokens (user is logged out from all devices). Cancelling notification!');
+        return;
+    }
+
+    // Send notification if everything's clear
     var payload = { // payload to send as a notification in the specific format required
-        notification: { title: 'New message from ' + toUserData.username + '!', 
+        notification: { title: 'New message from ' + fromUserData.username + '!', 
             body: 'Message: ' + content ? 
                 (content <= 100 ? content : (content.substring(0, 97) + '...')) 
                 : '', 
@@ -71,18 +94,11 @@ exports.messageTrigger = functions.firestore.document('messages/{messageId}').on
         data: { click_action: 'FLUTTER_NOTIFICATION_CLICK', message: 'You\'ve received a new message!' },
     }
 
-    var toUserDeviceTokens = toUserData.deviceTokens; // get the user's original device tokens where he's logged in
-
-    if(toUserDeviceTokens.length === 0) {
-        // null/empty array (user logged out from all devices); return
-        console.error('No registered device tokens (user is logged out from all devices). Cancelling notification!');
-        return;
-    }
-
-    var tokenMergeResult = await sendValidTokens(toUserId, toUserDeviceTokens, payload);
-
-    // TODO: Implement conversion of push notification to in-app notification (DB) for user (with both logged in and logged out tokens) here
-    // Notifications in DB only need user id and not anything else (hooray, no complicated deviceToken stuff!) and have no need for mobile implementation
+    var tokenMergeResult = await sendValidTokens(
+        toUserId, 
+        toUserDeviceTokens, 
+        payload
+    ); // send push notification
 });
 
 exports.matchTrigger = functions.firestore.document('users/{userId}').onUpdate(async (snapshot, context) => {
@@ -109,6 +125,10 @@ exports.matchTrigger = functions.firestore.document('users/{userId}').onUpdate(a
     var payload; // payload of notification to send through the FCM as a notification
     var matchedUserData; // matched user doc data (if cleared -> use before Id; if matched -> use after Id)
     var matchedUserDeviceTokens;
+    var dbNotificationBody; // body for the database notification
+
+    const currentTime = new Date();
+    const sentTime = currentTime.toISOString(); // might have slight inaccuracies due to being called this early
 
     if(isMatchRequest) {
         // new match request sent
@@ -118,29 +138,68 @@ exports.matchTrigger = functions.firestore.document('users/{userId}').onUpdate(a
             return; // error handled by getUserData function; no need to log it
         }
 
-        payload = { // payload to send as a notification in the specific format required
-            notification: { title: 'New match request from ' + userDataAfter.username + '!', 
+        // check whether the users were just matched together or if a match request was sent
+        payload = matchedUserData.matchedUserID === snapshot.after.id ? { // payload to send as a notification in the specific format required
+            notification: { 
+                title: 'Match request accepted by ' + userDataAfter.username + '!',
                 body: userDataAfter.username + ' has sent a match request to you! Go see it!',
                 sound: 'default' 
             },
             data: { click_action: 'FLUTTER_NOTIFICATION_CLICK', message: 'You\'ve received a new match request!' },
+        } : {
+            notification: { 
+                title: 'New match request from ' + userDataAfter.username + '!',
+                body: userDataAfter.username + ' has accepted your match request! Go send your first messages!',
+                sound: 'default'
+            },
+            data: { click_action: 'FLUTTER_NOTIFICATION_CLICK', message: 'Your match request has been accepted!' },
         }
+
+        dbNotificationBody = {
+            userID: matchedUserIdAfter,
+            message: matchedUserData.matchedUserID === snapshot.after.id ?  
+               `Your match request has been accepted by ${userDataAfter.username}! Go and chat!` 
+               : `You've received a new match request from ${userDataAfter.username}! Check it out!`,
+            sentTime: sentTime
+        };
     } else {
         // clear teacher/student
         matchedUserData = await getUserDataById(matchedUserIdBefore);
 
         if(matchedUserData === null) {
+            // if the data in the received doc is null
+            // or if the matchedUser is unmatched (doesn't care whether he's being unmatched)
+            // may implement notification about losing a potential match in the future
             return; // error handled by getUserData function; no need to log it
         }
 
-        payload = { // payload to send as a notification in the specific format required
+        payload = matchedUserData.matchedUserID === null ? {
+            notification: { 
+                title: 'Uh-oh! You lost`' + userDataAfter.username + ' as a potential pair!', 
+                body: userDataAfter.username + ' has decided to cancel their match request to you! Don\'t forget about your potential pairs!', 
+                sound: 'default' 
+            },
+            data: { click_action: 'FLUTTER_NOTIFICATION_CLICK', message: 'You\'ve been unmatched or skipped! Find a new pair!' },
+        } : { // payload to send as a notification in the specific format required; doesn't matter which user data is accessed here
             notification: { title: 'Uh-oh! Looks like ' + userDataAfter.username + ' has unmatched you!', 
-                body: userDataAfter.username + ' has decided to remove you as a pair! Quick, find someone new!', 
+                body: userDataAfter.username + ' has decided to remove you as a pair! You can clear your match as well and find someone new!', 
                 sound: 'default' 
             },
             data: { click_action: 'FLUTTER_NOTIFICATION_CLICK', message: 'You\'ve been unmatched or skipped! Find a new pair!' },
         }
+
+        dbNotificationBody = {
+            userID: matchedUserIdBefore,
+            message: matchedUserData.matchedUserID === null ? 
+                `You lost ${userDataAfter.username} as a potential pair! Find a new one!`
+                : `You've been unmatched by ${userDataAfter.username}! Find a new pair!`,
+            sentTime: sentTime
+        };
     }
+
+    var notificationAddResult = await admin.firestore().collection('notifications').add(
+        dbNotificationBody // add the db notification body as an object here
+    ); // send it to the db even if the user is logged out (passed all relevant checks)
 
     matchedUserDeviceTokens = matchedUserData.deviceTokens; // get the user's original device tokens where he's logged in
 
@@ -154,10 +213,7 @@ exports.matchTrigger = functions.firestore.document('users/{userId}').onUpdate(a
         isMatchRequest ? matchedUserIdAfter : matchedUserIdBefore, // send notification either to cancelled or matched user
         matchedUserDeviceTokens, 
         payload
-    ); // send notification to matched user
-
-    // TODO: Implement conversion of push notification to in-app notification (DB) for user here
-
+    ); // send push notification to matched user
 });
 
 // TODO: Implement skipped user push notification for user who sent the match request
