@@ -11,28 +11,47 @@ service cloud.firestore {
     // Make sure to write security rules for your app before that time, or else
     // your app will lose access to your Firestore database
     
+    // test rules
+    
     match /users/{userId} {
-      allow update, delete: if request.auth.uid != null;
-      allow read, write: if true;
+      allow update, write: if 
+      	request.auth.uid == userId && 
+        ((request.resource.data.lastUpdateTime == request.time &&  // check if updateTime exists
+        request.time > resource.data.lastUpdateTime + duration.value(10, 's')) ||
+        	request.resource.data.skippedUserIDs != resource.data.skippedUserIDs ||
+          request.resource.data.matchedUserID != resource.data.matchedUserID ||
+          request.resource.data.deviceTokens != resource.data.deviceTokens || 
+          request.resource.data.photoURL != resource.data.photoURL); 
+        // update if same user document and 3 seconds have passed 
+        // (unless skippedUserIDs, matchedUserID, photoURL, or deviceTokens are changed)
+      allow delete: if request.auth.uid == userId;
+      allow read; // TODO: Replace with check after filter implementation in client side
       allow create: if request.auth.uid != null;
     }
     
     match /messages/{messageId} {
-      allow update, delete: if request.auth.uid != null;
-      allow read, write: if true;
-      allow create: if request.auth.uid != null;
+      allow update, create: if request.auth.uid != null
+      	&& request.auth.uid == request.resource.data.fromId;
+        // users can only create messages by them
+      allow delete: if request.auth.uid == resource.data.fromId;
+        // only auth'd users can modify their own messages
+      allow read; // TODO: Encrypt messages!!! Also, add expanded rule after filtering in client side
     }
     
     match /tags/{tagId} {
     	allow delete, write: if false; 
-      allow read: if true;
+      allow read;
       allow update: if request.auth.uid != null;
     }
 
     match /notifications/{notificationId} {
-      allow read: if request.auth.uid != null;
-      allow create, write, delete: if true;
+      allow read: if request.auth.uid != null; 
+      	// TODO: Replace read with uid and userId check after implementation of filter in client side
+        // can't act as a filter rn
+      allow delete: if request.auth.uid == resource.data.userID;
+        // users can only modify their own notifications
       allow update: if false;
+      allow create;
     }
   }
 }

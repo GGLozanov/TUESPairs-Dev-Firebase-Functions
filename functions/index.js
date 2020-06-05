@@ -87,7 +87,7 @@ exports.messageTrigger = functions.firestore.document('messages/{messageId}').on
     var payload = { // payload to send as a notification in the specific format required
         notification: { title: 'New message from ' + fromUserData.username + '!', 
             body: 'Message: ' + content ? 
-                (content <= 100 ? content : (content.substring(0, 97) + '...')) 
+                (content.length <= 100 ? content : (content.substring(0, 97) + '...')) 
                 : '', 
             sound: 'default' 
         },
